@@ -1,1 +1,410 @@
 
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Advanced Face Tracking</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1a1a1a;
+            color: white;
+            overflow-x: hidden;
+        }
+        .container {
+            max-width: 100%;
+            margin: 0 auto;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+        }
+        .video-container {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+            justify-content: center;
+        }
+        .video-wrapper {
+            position: relative;
+            width: 100%;
+            max-width: 854px;
+        }
+        #videoElement, #playbackVideo {
+            width: 100%;
+            background: #000;
+            transform: rotate(90deg);
+            transform-origin: center center;
+            aspect-ratio: 10/16;
+        }
+        .overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            transform: rotate(90deg);
+            transform-origin: center center;
+            pointer-events: none;
+        }
+        .controls {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            z-index: 1000;
+            background: rgba(0,0,0,0.8);
+            padding: 15px;
+            border-radius: 12px;
+            backdrop-filter: blur(10px);
+        }
+        .stats {
+            position: absolute;
+            right: 10px;
+            top: 10px;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 12px;
+            transform: rotate(90deg);
+            transform-origin: right top;
+            border-radius: 8px;
+        }
+        button {
+            padding: 10px 20px;
+            background: #2563eb;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background: #1d4ed8;
+        }
+        button:disabled {
+            background: #4b5563;
+            cursor: not-allowed;
+        }
+        .pose-data {
+            position: fixed;
+            left: 20px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: rgba(0,0,0,0.8);
+            padding: 20px;
+            border-radius: 8px;
+            z-index: 1000;
+            backdrop-filter: blur(10px);
+        }
+        .pose-data h3 {
+            margin-top: 0;
+            color: #60a5fa;
+        }
+        #recordingTime {
+            color: #ef4444;
+            font-family: monospace;
+            padding: 10px;
+            border-radius: 4px;
+            background: rgba(255,255,255,0.1);
+        }
+        .orientation-message {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.9);
+            padding: 30px;
+            border-radius: 12px;
+            text-align: center;
+            z-index: 2000;
+            backdrop-filter: blur(10px);
+        }
+        @media (orientation: portrait) {
+            .orientation-message {
+                display: block;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="orientation-message">
+        Please rotate your device to landscape mode for better face tracking
+    </div>
+
+    <div class="container">
+        <div class="controls">
+            <button id="startButton">Enable Webcam</button>
+            <button id="recordButton" disabled>Start Recording</button>
+            <button id="playButton" disabled>Play Recording</button>
+            <span id="recordingTime"></span>
+        </div>
+
+        <div class="video-container">
+            <div class="video-wrapper">
+                <video id="videoElement" autoplay playsinline></video>
+                <canvas id="overlay" class="overlay"></canvas>
+                <div id="stats" class="stats"></div>
+            </div>
+            <div class="video-wrapper" style="display: none;" id="playbackWrapper">
+                <video id="playbackVideo" playsinline></video>
+                <canvas id="playbackOverlay" class="overlay"></canvas>
+            </div>
+        </div>
+
+        <div class="pose-data">
+            <h3>Head Pose Data</h3>
+            <div id="poseData"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.11.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection@0.0.3/dist/face-landmarks-detection.js"></script>
+
+    <script>
+        let video, model, overlay, playbackOverlay, ctx, playbackCtx;
+        let recordButton, playButton, mediaRecorder, recordedChunks = [];
+        let isRecording = false;
+        let startTime, recordingInterval;
+
+        async function loadModel() {
+            model = await faceLandmarksDetection.load(
+                faceLandmarksDetection.SupportedPackages.mediapipeFacemesh,
+                { maxFaces: 1 }
+            );
+            return model;
+        }
+
+        async function setupCamera() {
+            video = document.getElementById('videoElement');
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    'audio': false,
+                    'video': {
+                        facingMode: 'user',
+                        width: { ideal: 1920 },
+                        height: { ideal: 1200 },
+                        frameRate: { ideal: 60 }
+                    }
+                });
+                video.srcObject = stream;
+
+                return new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        const overlay = document.getElementById('overlay');
+                        overlay.width = video.videoHeight;
+                        overlay.height = video.videoWidth;
+                        
+                        const containerWidth = document.querySelector('.video-wrapper').offsetWidth;
+                        const scale = containerWidth / video.videoHeight;
+                        
+                        video.style.transform = `rotate(90deg) scale(${scale})`;
+                        overlay.style.transform = `rotate(90deg) scale(${scale})`;
+                        
+                        resolve(video);
+                    };
+                });
+            } catch (error) {
+                console.error('Error accessing camera:', error);
+                alert('Unable to access camera. Please ensure you have granted camera permissions.');
+            }
+        }
+
+        function calculateHeadPose(prediction) {
+            const nose = prediction.annotations.noseTip[0];
+            const leftEye = prediction.annotations.leftEyeIris[0];
+            const rightEye = prediction.annotations.rightEyeIris[0];
+            const leftMouth = prediction.annotations.lipsLowerInner[0];
+            const rightMouth = prediction.annotations.lipsLowerInner[6];
+
+            // Calculate angles
+            const pitch = Math.atan2(nose[1] - leftEye[1], nose[2] - leftEye[2]) * 180 / Math.PI;
+            const yaw = Math.atan2(nose[0] - rightEye[0], nose[2] - rightEye[2]) * 180 / Math.PI;
+            const roll = Math.atan2(rightEye[1] - leftEye[1], rightEye[0] - leftEye[0]) * 180 / Math.PI;
+
+            return {
+                pitch: Math.round(pitch),
+                yaw: Math.round(yaw),
+                roll: Math.round(roll)
+            };
+        }
+
+        function drawFaceMesh(predictions, context, poseDataElement) {
+            context.clearRect(0, 0, context.canvas.width, context.canvas.height);
+            
+            if (predictions.length > 0) {
+                predictions.forEach(prediction => {
+                    context.save();
+                    context.translate(context.canvas.width/2, context.canvas.height/2);
+                    context.rotate(-Math.PI/2);
+                    context.translate(-context.canvas.height/2, -context.canvas.width/2);
+
+                    // Draw face mesh
+                    context.strokeStyle = '#60a5fa';
+                    context.lineWidth = 1;
+
+                    const keypoints = prediction.scaledMesh;
+                    for (let i = 0; i < keypoints.length; i++) {
+                        const x = keypoints[i][0];
+                        const y = keypoints[i][1];
+
+                        context.beginPath();
+                        context.arc(x, y, 1, 0, 2 * Math.PI);
+                        context.stroke();
+                    }
+
+                    // Draw head pose vectors
+                    const pose = calculateHeadPose(prediction);
+                    const nose = prediction.annotations.noseTip[0];
+                    const scale = 50;
+
+                    // Draw pose axes
+                    context.lineWidth = 3;
+                    
+                    // X-axis (red)
+                    context.beginPath();
+                    context.strokeStyle = '#ef4444';
+                    context.moveTo(nose[0], nose[1]);
+                    context.lineTo(nose[0] + scale * Math.cos(pose.yaw * Math.PI / 180), nose[1]);
+                    context.stroke();
+
+                    // Y-axis (green)
+                    context.beginPath();
+                    context.strokeStyle = '#22c55e';
+                    context.moveTo(nose[0], nose[1]);
+                    context.lineTo(nose[0], nose[1] + scale * Math.cos(pose.pitch * Math.PI / 180));
+                    context.stroke();
+
+                    // Update pose data display
+                    if (poseDataElement) {
+                        poseDataElement.innerHTML = `
+                            <div style="font-family: monospace; line-height: 1.6">
+                                Pitch (up/down): ${pose.pitch}°<br>
+                                Yaw (left/right): ${pose.yaw}°<br>
+                                Roll (tilt): ${pose.roll}°
+                            </div>
+                        `;
+                    }
+
+                    context.restore();
+                });
+            }
+        }
+
+        async function renderPrediction() {
+            const predictions = await model.estimateFaces({
+                input: video,
+                returnTensors: false,
+                flipHorizontal: false
+            });
+
+            drawFaceMesh(predictions, ctx, document.getElementById('poseData'));
+            requestAnimationFrame(renderPrediction);
+        }
+
+        function setupRecording() {
+            const stream = video.srcObject;
+            mediaRecorder = new MediaRecorder(stream, {
+                mimeType: 'video/webm;codecs=vp9'
+            });
+            
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    recordedChunks.push(event.data);
+                }
+            };
+
+            mediaRecorder.onstop = () => {
+                const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                const playbackVideo = document.getElementById('playbackVideo');
+                playbackVideo.src = URL.createObjectURL(blob);
+                document.getElementById('playbackWrapper').style.display = 'block';
+                playButton.disabled = false;
+            };
+
+            recordButton.onclick = toggleRecording;
+            playButton.onclick = playRecording;
+        }
+
+        function toggleRecording() {
+            if (!isRecording) {
+                recordedChunks = [];
+                mediaRecorder.start();
+                recordButton.textContent = 'Stop Recording';
+                recordButton.style.background = '#dc2626';
+                startTime = Date.now();
+                updateRecordingTime();
+                recordingInterval = setInterval(updateRecordingTime, 1000);
+            } else {
+                mediaRecorder.stop();
+                recordButton.textContent = 'Start Recording';
+                recordButton.style.background = '#2563eb';
+                clearInterval(recordingInterval);
+                document.getElementById('recordingTime').textContent = '';
+            }
+            isRecording = !isRecording;
+        }
+
+        function updateRecordingTime() {
+            const duration = Math.floor((Date.now() - startTime) / 1000);
+            document.getElementById('recordingTime').textContent = 
+                `Recording: ${Math.floor(duration / 60)}:${(duration % 60).toString().padStart(2, '0')}`;
+        }
+
+        async function playRecording() {
+            const playbackVideo = document.getElementById('playbackVideo');
+            playbackVideo.play();
+
+            playbackOverlay = document.getElementById('playbackOverlay');
+            playbackOverlay.width = playbackVideo.videoWidth;
+            playbackOverlay.height = playbackVideo.videoHeight;
+            playbackCtx = playbackOverlay.getContext('2d');
+
+            async function trackPlayback() {
+                if (!playbackVideo.paused) {
+                    const predictions = await model.estimateFaces({
+                        input: playbackVideo,
+                        returnTensors: false,
+                        flipHorizontal: false
+                    });
+                    drawFaceMesh(predictions, playbackCtx, null);
+                    requestAnimationFrame(trackPlayback);
+                }
+            }
+
+            trackPlayback();
+        }
+
+        async function main() {
+            try {
+                document.getElementById('startButton').disabled = true;
+                document.getElementById('startButton').textContent = 'Loading...';
+                
+                await loadModel();
+                await setupCamera();
+                video.play();
+
+                overlay = document.getElementById('overlay');
+                ctx = overlay.getContext('2d');
+
+                recordButton = document.getElementById('recordButton');
+                playButton = document.getElementById('playButton');
+                recordButton.disabled = false;
+                setupRecording();
+
+                renderPrediction();
+                
+                document.getElementById('startButton').style.display = 'none';
+            } catch (error) {
+                console.error('Error initializing:', error);
+                document.getElementById('startButton').disabled = false;
+                document.getElementById('startButton').textContent = 'Retry';
+                alert('Error initializing face tracking. Please try again.');
+            }
+        }
+
+        document.getElementById('startButton').onclick = main;
+    </script>
+</body>
+</html>
